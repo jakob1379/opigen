@@ -87,14 +87,13 @@ class DockerClient:
         worker_mounts: tuple[WorkerMount, ...] = (),
     ) -> WorkerResult:
         kwargs: dict[str, Any] = {
-            "tmpfs": {"/tmp": "rw,nosuid,nodev,size=64m"},
+            "tmpfs": {"/tmp": "rw,nosuid,nodev,size=64m"},  # nosec B108: container tmpfs mount.
         }
         if source_container is not None:
             kwargs["volumes_from"] = [source_container.id]
         if worker_mounts:
             kwargs["volumes"] = {
-                mount.source: {"bind": mount.target, "mode": mount.mode}
-                for mount in worker_mounts
+                mount.source: {"bind": mount.target, "mode": mount.mode} for mount in worker_mounts
             }
         worker = self.client.containers.run(
             image=image,
@@ -109,9 +108,7 @@ class DockerClient:
             status_code = int(wait_result.get("StatusCode", 1))
             logs = worker.logs(stdout=True, stderr=True)
             output = (
-                logs.decode("utf-8", errors="replace")
-                if isinstance(logs, bytes)
-                else str(logs)
+                logs.decode("utf-8", errors="replace") if isinstance(logs, bytes) else str(logs)
             )
             return WorkerResult(exit_code=status_code, output=output)
         finally:

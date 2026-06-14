@@ -114,13 +114,13 @@ survive service restarts.
 
 ## Container Labels
 
-| Label | Required | Default | Description |
-| --- | --- | --- | --- |
-| `backup.enabled` | Yes | - | Set to `true` to opt in. |
-| `backup.group` | Yes | - | Group key for coordinated sequential backup. |
-| `backup.stop` | No | `true` | Stop the container during its group backup. |
-| `backup.args` | No | empty | Extra restic backup args, parsed shell-style. |
-| `backup.volumes` | No | `all` | `all` or CSV of named volume names / mount destinations. |
+| Label            | Required | Default | Description                                              |
+| ---------------- | -------- | ------- | -------------------------------------------------------- |
+| `backup.enabled` | Yes      | -       | Set to `true` to opt in.                                 |
+| `backup.group`   | Yes      | -       | Group key for coordinated sequential backup.             |
+| `backup.stop`    | No       | `true`  | Stop the container during its group backup.              |
+| `backup.args`    | No       | empty   | Extra restic backup args, parsed shell-style.            |
+| `backup.volumes` | No       | `all`   | `all` or CSV of named volume names / mount destinations. |
 
 Example labels:
 

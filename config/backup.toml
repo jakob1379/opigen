@@ -4,18 +4,9 @@ password_file = "/run/secrets/restic_password"
 aws_access_key_id_file = "/run/secrets/aws_access_key"
 aws_secret_access_key_file = "/run/secrets/aws_secret_key"
 
-[runtime]
-worker_image = "ghcr.io/jakob1379/opigen:latest"
-# Optional entries use "source:target" or "source:target:ro|rw".
-worker_mounts = []
-
-[state]
-path = "/state/backup_state.json"
-
-[schedule]
+[check]
 enabled = true
-frequency = "daily"
-preferred_time = "02:00:00"
+frequency = "weekly"
 
 [prune]
 enabled = true
@@ -25,12 +16,21 @@ keep_weekly = 4
 keep_monthly = 12
 keep_yearly = 10
 
-[check]
-enabled = true
-frequency = "weekly"
-
 [restic]
 global_args = "--verbose"
+
+[runtime]
+worker_image = "ghcr.io/jakob1379/opigen:latest"
+# Optional entries use "source:target" or "source:target:ro|rw".
+worker_mounts = []
+
+[schedule]
+enabled = true
+frequency = "daily"
+preferred_time = "02:00:00"
+
+[state]
+path = "/state/backup_state.json"
 
 [timeouts]
 stop_grace_period = 30

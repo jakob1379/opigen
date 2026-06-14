@@ -38,9 +38,7 @@ def test_groups_process_sequentially(app_config):
     assert _orchestrator(app_config, docker_client).run_once() is True
 
     backup_calls = [
-        call
-        for call in docker_client.worker_calls
-        if call["command"][:2] == ["restic", "backup"]
+        call for call in docker_client.worker_calls if call["command"][:2] == ["restic", "backup"]
     ]
     assert [call["source_container"].name for call in backup_calls] == ["a", "b"]
 
@@ -58,9 +56,7 @@ def test_stop_failure_skips_group_and_restores_already_stopped(app_config):
     assert first.events == ["stop:30", "start"]
     assert second.events == ["stop:30"]
     backup_calls = [
-        call
-        for call in docker_client.worker_calls
-        if call["command"][:2] == ["restic", "backup"]
+        call for call in docker_client.worker_calls if call["command"][:2] == ["restic", "backup"]
     ]
     assert [call["source_container"].name for call in backup_calls] == ["next"]
 
@@ -82,9 +78,7 @@ def test_backup_failure_still_restarts_and_continues(app_config):
     assert first.events == ["stop:30", "start"]
     assert second.events == ["stop:30", "start"]
     backup_calls = [
-        call
-        for call in docker_client.worker_calls
-        if call["command"][:2] == ["restic", "backup"]
+        call for call in docker_client.worker_calls if call["command"][:2] == ["restic", "backup"]
     ]
     assert [call["source_container"].name for call in backup_calls] == ["first", "second"]
 
