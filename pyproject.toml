@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "opigen-backup"
+version = "0.1.0"
+description = "Docker volume backup orchestrator using restic"
+requires-python = ">=3.14"
+dependencies = [
+  "docker",
+  "typer",
+]
+
+[project.scripts]
+backup = "backup.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+  "integration: tests that require a host Docker daemon",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ARG"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/backup"]
