@@ -25,22 +25,20 @@ runs repository maintenance after the backup pass completes.
 
 ## Quick Start
 
-Build the service image:
+Pull the published image from GitHub Container Registry:
 
 ```bash
-nix build .#dockerImage
-docker load < result
+docker pull ghcr.io/jakob1379/opigen:latest
 ```
 
-The production image contains the backup app, restic, and CA certificates only.
-The Docker integration test uses a separate `.#testFixtureImage` for shell-based
-test containers, so shell/coreutils do not ship in the runtime image.
+Pin a release by using its semver tag instead of `latest`, for example
+`ghcr.io/jakob1379/opigen:0.1.0`.
 
-Build the Python application:
-
-```bash
-nix build .#opigen-backup
-```
+Release images are built with Nix from `.#dockerImage` and published when a
+semver Git tag is pushed. The production image contains the backup app, restic,
+and CA certificates only. The Docker integration test uses a separate
+`.#testFixtureImage` for shell-based test containers, so shell/coreutils do not
+ship in the runtime image.
 
 Run one backup pass:
 
@@ -49,7 +47,7 @@ docker run --rm \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v ./config:/config:ro \
   -v opigen-backup-state:/state \
-  opigen-backup:latest run-once --config /config/backup.toml
+  ghcr.io/jakob1379/opigen:latest run-once --config /config/backup.toml
 ```
 
 Run as a scheduled service:
@@ -62,7 +60,7 @@ docker run -d \
   -v ./config:/config:ro \
   -v opigen-backup-state:/state \
   -e CONFIG_PATH=/config/backup.toml \
-  opigen-backup:latest
+  ghcr.io/jakob1379/opigen:latest
 ```
 
 The container default command is `serve`.
@@ -79,7 +77,7 @@ aws_access_key_id_file = "/run/secrets/aws_access_key"
 aws_secret_access_key_file = "/run/secrets/aws_secret_key"
 
 [runtime]
-worker_image = "opigen-backup:latest"
+worker_image = "ghcr.io/jakob1379/opigen:latest"
 # Optional bind mounts for worker containers, useful for local restic repositories.
 worker_mounts = []
 
@@ -153,7 +151,7 @@ containers through the Docker API.
 services:
   backup:
     profiles: [infra]
-    image: opigen-backup:latest
+    image: ghcr.io/jakob1379/opigen:latest
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./config:/config:ro
@@ -216,6 +214,19 @@ Enter the dev shell:
 
 ```bash
 nix develop
+```
+
+Build the service image locally:
+
+```bash
+nix build .#dockerImage
+docker load < result
+```
+
+Build the Python application:
+
+```bash
+nix build .#opigen-backup
 ```
 
 Run tests:
