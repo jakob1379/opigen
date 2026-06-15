@@ -1,5 +1,7 @@
 # Opigen Backup
 
+![opigen banner image](https://github.com/jakob1379/opigen/blob/main/banner.png)
+
 Docker volume backup orchestrator for restic. The service discovers Docker
 containers that opt in with labels, groups them for coordinated stop/start,
 backs up selected named volumes through ephemeral restic worker containers, and
@@ -44,6 +46,11 @@ Run one backup pass:
 
 ```bash
 docker run --rm \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --group-add "$(stat -c '%g' /var/run/docker.sock)" \
+  --tmpfs /tmp:rw,nosuid,nodev,size=64m \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v ./config:/config:ro \
   -v opigen-backup-state:/state \
@@ -56,6 +63,11 @@ Run as a scheduled service:
 docker run -d \
   --name opigen-backup \
   --restart unless-stopped \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --group-add "$(stat -c '%g' /var/run/docker.sock)" \
+  --tmpfs /tmp:rw,nosuid,nodev,size=64m \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v ./config:/config:ro \
   -v opigen-backup-state:/state \
@@ -64,6 +76,12 @@ docker run -d \
 ```
 
 The container default command is `serve`.
+
+The image runs the long-lived controller process as UID/GID `65532:65532`.
+Because the controller needs Docker API access, add the host Docker socket group
+when the socket is group-readable. The ephemeral restic worker containers are
+started as root so they can read arbitrary source volume ownership, but they run
+with `no-new-privileges`, a read-only root filesystem, and a `/tmp` tmpfs.
 
 ## Configuration
 
@@ -83,6 +101,12 @@ worker_mounts = []
 
 [state]
 path = "/state/backup_state.json"
+
+[health]
+bind_host = "127.0.0.1"
+port = 8080
+# Optional. Default is twice the configured schedule interval.
+readiness_max_age_seconds = 172800
 
 [schedule]
 enabled = true
@@ -110,7 +134,8 @@ backup_operation = 3600
 ```
 
 `[state].path` should live on persistent storage if prune/check timing should
-survive service restarts.
+survive service restarts. The same state file stores backup metadata used by
+restore commands and by the health/metrics endpoints.
 
 ## Container Labels
 
@@ -142,6 +167,35 @@ services:
 
 Bind mounts are ignored in v1, even when selected manually.
 
+## Restore
+
+Backups record the group, source container, selected named volume, original
+mount destination, image reference, image ID, repo digest when available, restic
+snapshot ID, and backup outcome.
+
+```bash
+backup restore list --config /config/backup.toml
+backup restore plan <backup-id> --config /config/backup.toml
+backup restore volume <backup-id> --config /config/backup.toml
+```
+
+`restore volume` creates a new Docker volume by default and restores the saved
+mount path into it. It refuses to restore when the current image ID or repo
+digest for the original image reference does not match the backup metadata. Use
+`--allow-image-drift` only after intentionally accepting that mismatch.
+
+## Health And Metrics
+
+`serve` starts a small HTTP server alongside the scheduler. It binds to
+`127.0.0.1:8080` by default.
+
+- `GET /healthz` returns healthy when config and state can be loaded.
+- `GET /readyz` fails after a failed backup run or when the last successful
+  backup is older than the configured readiness age.
+- `GET /metrics` exposes Prometheus text metrics for backup runs, volumes,
+  containers, restic maintenance, durations, last success, last run, next run,
+  and build info.
+
 ## Docker Compose
 
 The service needs a writable Docker socket because it stops, starts, and creates
@@ -152,6 +206,17 @@ services:
   backup:
     profiles: [infra]
     image: ghcr.io/jakob1379/opigen:latest
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    group_add:
+      # Set DOCKER_SOCKET_GID with:
+      # export DOCKER_SOCKET_GID="$(stat -c '%g' /var/run/docker.sock)"
+      - "${DOCKER_SOCKET_GID}"
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=64m
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./config:/config:ro
