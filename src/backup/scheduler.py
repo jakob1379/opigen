@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-import logging
 import time as time_module
 from collections.abc import Callable
 from datetime import datetime, timedelta
 
+import structlog
+
 from backup.config import ScheduleConfig
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = structlog.get_logger(__name__)
 
 
 def calculate_next_run(now: datetime, schedule: ScheduleConfig) -> datetime:
@@ -49,6 +50,6 @@ def serve(
         if on_next_run is not None:
             on_next_run(next_run)
         delay = max(0.0, (next_run - now).total_seconds())
-        LOGGER.info("next_run_scheduled", extra={"next_run": next_run.isoformat()})
+        LOGGER.info("next_run_scheduled", next_run=next_run.isoformat())
         sleep(delay)
         run_once()

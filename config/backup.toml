@@ -8,9 +8,17 @@ aws_secret_access_key_file = "/run/secrets/aws_secret_key"
 enabled = true
 frequency = "weekly"
 
+[discovery]
+default_mounts = "named"
+unreadable_mount = "skip"
+
 [health]
 bind_host = "127.0.0.1"
 port = 8080
+
+[logging]
+level = "info"
+format = "json"
 
 [prune]
 enabled = true

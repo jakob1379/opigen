@@ -122,3 +122,87 @@ def test_successful_backup_records_restore_metadata(app_config):
     assert state.runtime.last_run_volumes_attempted == 1
     assert state.metrics.backup_runs["success"] == 1
     assert state.metrics.backup_volumes["success"] == 1
+
+
+def test_dry_run_does_not_run_workers_or_write_state(app_config):
+    container = _container("db", "database")
+    docker_client = FakeDockerClient([container])
+    orchestrator = _orchestrator(app_config, docker_client)
+
+    assert orchestrator.dry_run() is True
+
+    assert container.events == []
+    assert docker_client.worker_calls == []
+    assert not app_config.state.path.exists()
+
+
+def test_bind_mount_uses_readonly_worker_mount(app_config):
+    container = FakeContainer(
+        name="db",
+        labels={
+            "backup.enabled": "true",
+            "backup.group": "database",
+            "backup.mounts": "all",
+        },
+        mounts=[Mount(type="bind", name=None, destination="/data", source="/srv/data")],
+    )
+    docker_client = FakeDockerClient([container])
+    docker_client.results = [
+        WorkerResult(0, "readable"),
+        WorkerResult(0, "snapshots"),
+        WorkerResult(0, '{"message_type":"summary","snapshot_id":"snapshot123"}\n'),
+        WorkerResult(0, "forget"),
+        WorkerResult(0, "check"),
+    ]
+
+    assert _orchestrator(app_config, docker_client).run_once() is True
+
+    readable_call = docker_client.worker_calls[0]
+    backup_call = docker_client.worker_calls[2]
+    assert readable_call["worker_mounts"][-1].source == "/srv/data"
+    assert readable_call["worker_mounts"][-1].target == "/data"
+    assert readable_call["worker_mounts"][-1].mode == "ro"
+    assert backup_call["source_container"] is None
+    assert backup_call["worker_mounts"][-1].source == "/srv/data"
+
+
+def test_unreadable_bind_mount_is_skipped(app_config):
+    container = FakeContainer(
+        name="db",
+        labels={
+            "backup.enabled": "true",
+            "backup.group": "database",
+            "backup.mounts": "all",
+        },
+        mounts=[Mount(type="bind", name=None, destination="/data", source="/srv/data")],
+    )
+    docker_client = FakeDockerClient([container])
+    docker_client.results = [
+        WorkerResult(1, "unreadable"),
+        WorkerResult(0, "snapshots"),
+        WorkerResult(0, "forget"),
+        WorkerResult(0, "check"),
+    ]
+
+    assert _orchestrator(app_config, docker_client).run_once() is True
+
+    backup_calls = [
+        call for call in docker_client.worker_calls if call["command"][:2] == ["restic", "backup"]
+    ]
+    assert backup_calls == []
+
+
+def test_pre_stop_signal_runs_before_stop(app_config):
+    container = _container("db", "database")
+    container.labels["backup.pre_stop_signal"] = "USR1"
+    docker_client = FakeDockerClient([container])
+    docker_client.results = [
+        WorkerResult(0, "snapshots"),
+        WorkerResult(0, '{"message_type":"summary","snapshot_id":"snapshot123"}\n'),
+        WorkerResult(0, "forget"),
+        WorkerResult(0, "check"),
+    ]
+
+    assert _orchestrator(app_config, docker_client).run_once() is True
+
+    assert container.events == ["signal:USR1", "stop:30", "start"]

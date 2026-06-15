@@ -1,56 +1,35 @@
 from __future__ import annotations
 
-import json
 import logging
 import sys
-from datetime import UTC, datetime
-from typing import Any
 
-RESERVED_LOG_FIELDS = {
-    "args",
-    "asctime",
-    "created",
-    "exc_info",
-    "exc_text",
-    "filename",
-    "funcName",
-    "levelname",
-    "levelno",
-    "lineno",
-    "module",
-    "msecs",
-    "message",
-    "msg",
-    "name",
-    "pathname",
-    "process",
-    "processName",
-    "relativeCreated",
-    "stack_info",
-    "thread",
-    "threadName",
-}
+import structlog
 
 
-class JsonFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        payload: dict[str, Any] = {
-            "timestamp": datetime.now(UTC).isoformat(),
-            "level": record.levelname,
-            "logger": record.name,
-            "message": record.getMessage(),
-        }
-        for key, value in record.__dict__.items():
-            if key not in RESERVED_LOG_FIELDS and not key.startswith("_"):
-                payload[key] = value
-        if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)
-        return json.dumps(payload, sort_keys=True, default=str)
+def configure_logging(level: str = "info", format: str = "json") -> None:
+    level_name = level.upper()
+    level_number = logging.getLevelName(level_name)
+    if not isinstance(level_number, int):
+        level_name = "INFO"
+        level_number = logging.INFO
 
+    processors = [
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso", utc=True),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+    ]
+    if format == "console":
+        processors.append(structlog.dev.ConsoleRenderer(colors=False))
+    else:
+        processors.append(structlog.processors.JSONRenderer(sort_keys=True))
 
-def configure_logging(level: str = "INFO") -> None:
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(JsonFormatter())
-    root = logging.getLogger()
-    root.handlers = [handler]
-    root.setLevel(level)
+    logging.basicConfig(format="%(message)s", stream=sys.stdout, level=level_number, force=True)
+    structlog.configure(
+        processors=processors,
+        wrapper_class=structlog.make_filtering_bound_logger(level_number),
+        logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
+        cache_logger_on_first_use=False,
+    )
+    logging.getLogger().setLevel(level_name)

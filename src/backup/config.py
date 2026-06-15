@@ -46,6 +46,18 @@ class HealthConfig:
 
 
 @dataclass(frozen=True)
+class LoggingConfig:
+    level: str = "info"
+    format: str = "json"
+
+
+@dataclass(frozen=True)
+class DiscoveryConfig:
+    default_mounts: str = "named"
+    unreadable_mount: str = "skip"
+
+
+@dataclass(frozen=True)
 class ScheduleConfig:
     enabled: bool = True
     frequency: str = "daily"
@@ -85,6 +97,8 @@ class AppConfig:
     runtime: RuntimeConfig = RuntimeConfig()
     state: StateConfig = StateConfig()
     health: HealthConfig = HealthConfig()
+    logging: LoggingConfig = LoggingConfig()
+    discovery: DiscoveryConfig = DiscoveryConfig()
     schedule: ScheduleConfig = ScheduleConfig()
     prune: PruneConfig = PruneConfig()
     check: CheckConfig = CheckConfig()
@@ -112,12 +126,23 @@ def parse_config(data: dict[str, Any]) -> AppConfig:
     runtime_data = _table(data, "runtime")
     state_data = _table(data, "state")
     health_data = _table(data, "health")
+    logging_data = _table(data, "logging")
+    discovery_data = _table(data, "discovery")
 
     schedule_frequency = str(schedule_data.get("frequency", "daily"))
     _validate_frequency(schedule_frequency, "schedule.frequency")
 
     check_frequency = str(check_data.get("frequency", "weekly"))
     _validate_frequency(check_frequency, "check.frequency")
+    logging_format = str(logging_data.get("format", "json")).lower()
+    if logging_format not in {"json", "console"}:
+        raise ConfigError("logging.format must be json or console")
+    default_mounts = str(discovery_data.get("default_mounts", "named")).lower()
+    if default_mounts not in {"named", "all"}:
+        raise ConfigError("discovery.default_mounts must be named or all")
+    unreadable_mount = str(discovery_data.get("unreadable_mount", "skip")).lower()
+    if unreadable_mount != "skip":
+        raise ConfigError("discovery.unreadable_mount must be skip")
 
     return AppConfig(
         backup=BackupRepositoryConfig(
@@ -139,6 +164,14 @@ def parse_config(data: dict[str, Any]) -> AppConfig:
                 "readiness_max_age_seconds",
                 None,
             ),
+        ),
+        logging=LoggingConfig(
+            level=str(logging_data.get("level", "info")).lower(),
+            format=logging_format,
+        ),
+        discovery=DiscoveryConfig(
+            default_mounts=default_mounts,
+            unreadable_mount=unreadable_mount,
         ),
         schedule=ScheduleConfig(
             enabled=bool(schedule_data.get("enabled", True)),

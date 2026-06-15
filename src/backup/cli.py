@@ -32,11 +32,19 @@ ConfigOption = Annotated[
     ),
 ]
 LogLevelOption = Annotated[
-    str,
+    str | None,
     typer.Option(
         "--log-level",
         envvar="LOG_LEVEL",
-        help="Python logging level.",
+        help="Logging level. Overrides logging.level.",
+    ),
+]
+LogFormatOption = Annotated[
+    str | None,
+    typer.Option(
+        "--log-format",
+        envvar="LOG_FORMAT",
+        help="Logging format: json or console. Overrides logging.format.",
     ),
 ]
 
@@ -51,22 +59,35 @@ def default(ctx: typer.Context) -> None:
 @app.command("run-once")
 def run_once(
     config: ConfigOption = Path("/config/backup.toml"),
-    log_level: LogLevelOption = "INFO",
+    log_level: LogLevelOption = None,
+    log_format: LogFormatOption = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Show the backup plan without changing state or running backups.",
+        ),
+    ] = False,
 ) -> None:
     """Run one backup cycle and exit."""
-    orchestrator = _build_orchestrator(config, log_level)
-    if not orchestrator.run_once():
+    orchestrator = _build_orchestrator(config, log_level, log_format)
+    if dry_run:
+        ok = orchestrator.dry_run()
+    else:
+        ok = orchestrator.run_once()
+    if not ok:
         raise typer.Exit(code=1)
 
 
 @app.command()
 def serve(
     config: ConfigOption = Path("/config/backup.toml"),
-    log_level: LogLevelOption = "INFO",
+    log_level: LogLevelOption = None,
+    log_format: LogFormatOption = None,
 ) -> None:
     """Run the scheduled backup service."""
     config_data = load_config(config)
-    orchestrator = _build_orchestrator(config, log_level)
+    orchestrator = _build_orchestrator(config, log_level, log_format)
     state_store = orchestrator.state_store
     health_server = HealthServer(config_path=config, config=config_data)
     health_server.start()
@@ -85,10 +106,11 @@ def serve(
 @restore_app.command("list")
 def restore_list(
     config: ConfigOption = Path("/config/backup.toml"),
-    log_level: LogLevelOption = "INFO",
+    log_level: LogLevelOption = None,
+    log_format: LogFormatOption = None,
 ) -> None:
     """List restorable backup records."""
-    manager = _build_restore_manager(config, log_level)
+    manager = _build_restore_manager(config, log_level, log_format)
     typer.echo(json.dumps([_backup_payload(record) for record in manager.list_backups()], indent=2))
 
 
@@ -96,14 +118,15 @@ def restore_list(
 def restore_plan(
     backup_id: Annotated[str, typer.Argument(help="Backup record id from restore list.")],
     config: ConfigOption = Path("/config/backup.toml"),
-    log_level: LogLevelOption = "INFO",
+    log_level: LogLevelOption = None,
+    log_format: LogFormatOption = None,
     target_volume: Annotated[
         str | None,
         typer.Option("--target-volume", help="Docker volume to restore into."),
     ] = None,
 ) -> None:
     """Show the restore target and image identity check for a backup."""
-    manager = _build_restore_manager(config, log_level)
+    manager = _build_restore_manager(config, log_level, log_format)
     try:
         plan = manager.plan(backup_id, target_volume=target_volume)
     except RestoreError as exc:
@@ -116,7 +139,8 @@ def restore_plan(
 def restore_volume(
     backup_id: Annotated[str, typer.Argument(help="Backup record id from restore list.")],
     config: ConfigOption = Path("/config/backup.toml"),
-    log_level: LogLevelOption = "INFO",
+    log_level: LogLevelOption = None,
+    log_format: LogFormatOption = None,
     target_volume: Annotated[
         str | None,
         typer.Option("--target-volume", help="Docker volume to restore into."),
@@ -130,7 +154,7 @@ def restore_volume(
     ] = False,
 ) -> None:
     """Restore one backed-up named Docker volume into a new or selected volume."""
-    manager = _build_restore_manager(config, log_level)
+    manager = _build_restore_manager(config, log_level, log_format)
     try:
         plan = manager.restore_volume(
             backup_id,
@@ -151,9 +175,16 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _build_orchestrator(config: Path, log_level: str) -> BackupOrchestrator:
-    configure_logging(log_level)
+def _build_orchestrator(
+    config: Path,
+    log_level: str | None,
+    log_format: str | None,
+) -> BackupOrchestrator:
     config_data = load_config(config)
+    configure_logging(
+        log_level or config_data.logging.level,
+        log_format or config_data.logging.format,
+    )
     docker_client = DockerClient()
     restic_runner = ResticRunner(config_data, docker_client)
     return BackupOrchestrator(
@@ -164,9 +195,16 @@ def _build_orchestrator(config: Path, log_level: str) -> BackupOrchestrator:
     )
 
 
-def _build_restore_manager(config: Path, log_level: str) -> RestoreManager:
-    configure_logging(log_level)
+def _build_restore_manager(
+    config: Path,
+    log_level: str | None,
+    log_format: str | None,
+) -> RestoreManager:
     config_data = load_config(config)
+    configure_logging(
+        log_level or config_data.logging.level,
+        log_format or config_data.logging.format,
+    )
     docker_client = DockerClient()
     restic_runner = ResticRunner(config_data, docker_client)
     return RestoreManager(

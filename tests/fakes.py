@@ -21,6 +21,7 @@ class FakeContainer:
     id: str | None = None
     stop_error: Exception | None = None
     start_error: Exception | None = None
+    signal_error: Exception | None = None
     events: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -36,6 +37,11 @@ class FakeContainer:
         if self.stop_error is not None:
             raise self.stop_error
         self.status = "exited"
+
+    def signal(self, signal: str) -> None:
+        self.events.append(f"signal:{signal}")
+        if self.signal_error is not None:
+            raise self.signal_error
 
     def start(self) -> None:
         self.events.append("start")

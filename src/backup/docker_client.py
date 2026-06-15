@@ -11,6 +11,8 @@ class Mount:
     type: str
     name: str | None
     destination: str
+    source: str | None = None
+    read_write: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,8 @@ class DockerContainer:
                 type=str(mount.get("Type", "")),
                 name=mount.get("Name"),
                 destination=str(mount.get("Destination", "")),
+                source=_optional_str(mount.get("Source")),
+                read_write=mount.get("RW"),
             )
             for mount in attrs.get("Mounts", [])
         ]
@@ -60,6 +64,10 @@ class DockerContainer:
 
     def stop(self, timeout: int) -> None:
         self.raw.stop(timeout=timeout)
+        self.reload()
+
+    def signal(self, signal: str) -> None:
+        self.raw.kill(signal=signal)
         self.reload()
 
     def start(self) -> None:

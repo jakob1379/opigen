@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import logging
 import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass
+
+import structlog
 
 from backup.config import AppConfig
 from backup.docker_client import DockerClient, DockerContainer
@@ -17,9 +18,9 @@ from backup.metrics import (
 )
 from backup.restic import ResticRunner, parse_backup_snapshot_id
 from backup.state import BackupRecord, StateStore, utc_now
-from backup.volumes import VolumeSelectionError, select_named_volumes
+from backup.volumes import BackupMount, MountSelectionError, select_backup_mounts
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,18 @@ class BackupOrchestrator:
             )
         return success
 
+    def dry_run(self) -> bool:
+        LOGGER.info("dry_run_started")
+        groups = self.discover_groups()
+        success = True
+        for group_name in sorted(groups):
+            if not self._dry_run_group(group_name, groups[group_name]):
+                success = False
+        planned_maintenance = self.restic_runner.planned_maintenance(self.state_store.load())
+        LOGGER.info("dry_run_maintenance_planned", operations=list(planned_maintenance))
+        LOGGER.info("dry_run_finished", success=success)
+        return success
+
     def discover_groups(self) -> dict[str, list[BackupMember]]:
         groups: dict[str, list[BackupMember]] = defaultdict(list)
         for container in self.docker_client.list_backup_containers():
@@ -95,11 +108,83 @@ class BackupOrchestrator:
             except LabelError as exc:
                 LOGGER.error(
                     "container_config_error",
-                    extra={"container": container.name, "error": str(exc)},
+                    container=container.name,
+                    error=str(exc),
                 )
                 continue
             groups[labels.group].append(BackupMember(container=container, labels=labels))
         return dict(groups)
+
+    def _dry_run_group(self, group_name: str, members: list[BackupMember]) -> bool:
+        LOGGER.info("dry_run_group", group=group_name, containers=len(members))
+        group_success = True
+        for member in members:
+            container = member.container
+            if member.labels.stop and container.running:
+                if member.labels.pre_stop_signal:
+                    LOGGER.info(
+                        "dry_run_pre_stop_signal_planned",
+                        group=group_name,
+                        container=container.name,
+                        signal=member.labels.pre_stop_signal,
+                        wait_seconds=member.labels.pre_stop_wait_seconds,
+                    )
+                LOGGER.info(
+                    "dry_run_container_stop_planned",
+                    group=group_name,
+                    container=container.name,
+                    timeout_seconds=self.config.timeouts.stop_grace_period,
+                )
+            if not self._dry_run_container(group_name, member):
+                group_success = False
+            if member.labels.stop and container.running:
+                LOGGER.info(
+                    "dry_run_container_start_planned",
+                    group=group_name,
+                    container=container.name,
+                )
+        return group_success
+
+    def _dry_run_container(self, group_name: str, member: BackupMember) -> bool:
+        try:
+            mounts = select_backup_mounts(
+                member.container.mounts,
+                member.labels.mounts,
+                self.config.discovery,
+            )
+        except MountSelectionError as exc:
+            LOGGER.error(
+                "dry_run_mount_selection_failed",
+                group=group_name,
+                container=member.container.name,
+                error=str(exc),
+            )
+            return False
+
+        selected = _log_mount_plan(group_name, member.container.name, mounts, dry_run=True)
+        for backup_mount in selected:
+            command = [
+                "restic",
+                "backup",
+                *self.config.restic.global_args,
+                *member.labels.restic_args,
+                backup_mount.mount.destination,
+            ]
+            LOGGER.info(
+                "dry_run_backup_planned",
+                group=group_name,
+                container=member.container.name,
+                mount_type=backup_mount.mount.type,
+                mount_name=backup_mount.mount.name,
+                mount_source=backup_mount.mount.source,
+                destination=backup_mount.mount.destination,
+                worker_mounts=[
+                    f"{mount.source}:{mount.target}:{mount.mode}"
+                    for mount in backup_mount.worker_mounts
+                ],
+                command=command,
+            )
+        return True
 
     def _process_group(
         self,
@@ -107,27 +192,13 @@ class BackupOrchestrator:
         members: list[BackupMember],
         context: BackupRunContext,
     ) -> bool:
-        LOGGER.info("group_started", extra={"group": group_name, "containers": len(members)})
+        LOGGER.info("group_started", group=group_name, containers=len(members))
         stopped_by_run: list[DockerContainer] = []
         group_success = True
 
         for member in members:
-            if member.labels.stop and member.container.running:
-                try:
-                    member.container.stop(timeout=self.config.timeouts.stop_grace_period)
-                    stopped_by_run.append(member.container)
-                    LOGGER.info(
-                        "container_stopped",
-                        extra={"group": group_name, "container": member.container.name},
-                    )
-                except Exception:
-                    LOGGER.exception(
-                        "container_stop_failed",
-                        extra={"group": group_name, "container": member.container.name},
-                    )
-                    context.last_error = f"failed to stop container {member.container.name}"
-                    self._restart_stopped(group_name, stopped_by_run)
-                    return False
+            if not self._stop_group_member(group_name, member, context, stopped_by_run):
+                return False
 
         try:
             for member in members:
@@ -137,8 +208,73 @@ class BackupOrchestrator:
             if not self._restart_stopped(group_name, stopped_by_run):
                 group_success = False
 
-        LOGGER.info("group_finished", extra={"group": group_name, "success": group_success})
+        LOGGER.info("group_finished", group=group_name, success=group_success)
         return group_success
+
+    def _stop_group_member(
+        self,
+        group_name: str,
+        member: BackupMember,
+        context: BackupRunContext,
+        stopped_by_run: list[DockerContainer],
+    ) -> bool:
+        if not (member.labels.stop and member.container.running):
+            return True
+        if member.labels.pre_stop_signal and not self._send_pre_stop_signal(
+            group_name,
+            member,
+            context,
+            stopped_by_run,
+        ):
+            return False
+        try:
+            member.container.stop(timeout=self.config.timeouts.stop_grace_period)
+            stopped_by_run.append(member.container)
+            LOGGER.info(
+                "container_stopped",
+                group=group_name,
+                container=member.container.name,
+            )
+            return True
+        except Exception:
+            LOGGER.exception(
+                "container_stop_failed",
+                group=group_name,
+                container=member.container.name,
+            )
+            context.last_error = f"failed to stop container {member.container.name}"
+            self._restart_stopped(group_name, stopped_by_run)
+            return False
+
+    def _send_pre_stop_signal(
+        self,
+        group_name: str,
+        member: BackupMember,
+        context: BackupRunContext,
+        stopped_by_run: list[DockerContainer],
+    ) -> bool:
+        try:
+            member.container.signal(member.labels.pre_stop_signal or "")
+            LOGGER.info(
+                "container_pre_stop_signaled",
+                group=group_name,
+                container=member.container.name,
+                signal=member.labels.pre_stop_signal,
+                wait_seconds=member.labels.pre_stop_wait_seconds,
+            )
+            if member.labels.pre_stop_wait_seconds:
+                time.sleep(member.labels.pre_stop_wait_seconds)
+            return True
+        except Exception:
+            LOGGER.exception(
+                "container_pre_stop_signal_failed",
+                group=group_name,
+                container=member.container.name,
+                signal=member.labels.pre_stop_signal,
+            )
+            context.last_error = f"failed to signal container {member.container.name}"
+            self._restart_stopped(group_name, stopped_by_run)
+            return False
 
     def _backup_container(
         self,
@@ -149,11 +285,17 @@ class BackupOrchestrator:
         container = member.container
         context.containers_attempted += 1
         try:
-            volumes = select_named_volumes(container.mounts, member.labels.volumes)
-        except VolumeSelectionError as exc:
+            mounts = select_backup_mounts(
+                container.mounts,
+                member.labels.mounts,
+                self.config.discovery,
+            )
+        except MountSelectionError as exc:
             LOGGER.error(
-                "volume_selection_failed",
-                extra={"group": group_name, "container": container.name, "error": str(exc)},
+                "mount_selection_failed",
+                group=group_name,
+                container=container.name,
+                error=str(exc),
             )
             context.last_error = str(exc)
             self.state_store.update(
@@ -161,10 +303,12 @@ class BackupOrchestrator:
             )
             return False
 
-        if not volumes:
+        selected_mounts = _log_mount_plan(group_name, container.name, mounts, dry_run=False)
+        if not selected_mounts:
             LOGGER.warning(
-                "container_has_no_named_volumes",
-                extra={"group": group_name, "container": container.name},
+                "container_has_no_backup_mounts",
+                group=group_name,
+                container=container.name,
             )
             self.state_store.update(
                 lambda state: record_backup_container(state, success=True),
@@ -172,14 +316,29 @@ class BackupOrchestrator:
             return True
 
         container_success = True
-        for volume in volumes:
+        backed_up = False
+        for backup_mount in selected_mounts:
+            if backup_mount.worker_mounts and not self.restic_runner.check_readable_path(
+                backup_mount.mount.destination,
+                backup_mount.worker_mounts,
+            ):
+                LOGGER.warning(
+                    "mount_skipped_unreadable",
+                    group=group_name,
+                    container=container.name,
+                    mount_type=backup_mount.mount.type,
+                    mount_source=backup_mount.mount.source,
+                    destination=backup_mount.mount.destination,
+                )
+                continue
             context.volumes_attempted += 1
             backup_started_at = utc_now()
             volume_started = time.perf_counter()
             result = self.restic_runner.backup_volume(
                 container,
-                volume.destination,
+                backup_mount.mount.destination,
                 member.labels.restic_args,
+                worker_mounts=backup_mount.worker_mounts,
             )
             backup_completed_at = utc_now()
             volume_duration = time.perf_counter() - volume_started
@@ -187,35 +346,35 @@ class BackupOrchestrator:
                 context.last_error = _error_summary(result.output)
                 LOGGER.error(
                     "backup_failed",
-                    extra={
-                        "group": group_name,
-                        "container": container.name,
-                        "volume": volume.name,
-                        "destination": volume.destination,
-                        "exit_code": result.exit_code,
-                        "output": result.output,
-                    },
+                    group=group_name,
+                    container=container.name,
+                    mount_type=backup_mount.mount.type,
+                    mount_name=backup_mount.mount.name,
+                    mount_source=backup_mount.mount.source,
+                    destination=backup_mount.mount.destination,
+                    exit_code=result.exit_code,
+                    output=result.output,
                 )
                 self._record_backup_volume(
                     BackupRecord(
                         id=_backup_record_id(
                             group_name,
                             container.name,
-                            volume.name or "volume",
+                            backup_mount.display_name,
                             backup_completed_at,
                         ),
                         group=group_name,
                         container_name=container.name,
                         container_id=str(container.id),
-                        volume_name=volume.name or "",
-                        volume_destination=volume.destination,
+                        volume_name=backup_mount.display_name,
+                        volume_destination=backup_mount.mount.destination,
                         image_reference=container.image.reference,
                         image_id=container.image.image_id,
                         repo_digest=_first_repo_digest(container),
                         started_at=backup_started_at,
                         completed_at=backup_completed_at,
                         outcome="failure",
-                        snapshot_paths=(volume.destination,),
+                        snapshot_paths=(backup_mount.mount.destination,),
                         error=_error_summary(result.output),
                     ),
                     success=False,
@@ -229,14 +388,14 @@ class BackupOrchestrator:
                     id=_backup_record_id(
                         group_name,
                         container.name,
-                        volume.name or "volume",
+                        backup_mount.display_name,
                         backup_completed_at,
                     ),
                     group=group_name,
                     container_name=container.name,
                     container_id=str(container.id),
-                    volume_name=volume.name or "",
-                    volume_destination=volume.destination,
+                    volume_name=backup_mount.display_name,
+                    volume_destination=backup_mount.mount.destination,
                     image_reference=container.image.reference,
                     image_id=container.image.image_id,
                     repo_digest=_first_repo_digest(container),
@@ -244,19 +403,26 @@ class BackupOrchestrator:
                     completed_at=backup_completed_at,
                     outcome="success",
                     snapshot_id=snapshot_id,
-                    snapshot_paths=(volume.destination,),
+                    snapshot_paths=(backup_mount.mount.destination,),
                 ),
                 success=True,
                 duration_seconds=volume_duration,
             )
+            backed_up = True
             LOGGER.info(
                 "backup_finished",
-                extra={
-                    "group": group_name,
-                    "container": container.name,
-                    "volume": volume.name,
-                    "destination": volume.destination,
-                },
+                group=group_name,
+                container=container.name,
+                mount_type=backup_mount.mount.type,
+                mount_name=backup_mount.mount.name,
+                mount_source=backup_mount.mount.source,
+                destination=backup_mount.mount.destination,
+            )
+        if not backed_up and selected_mounts:
+            LOGGER.warning(
+                "container_had_no_readable_backup_mounts",
+                group=group_name,
+                container=container.name,
             )
         self.state_store.update(
             lambda state: record_backup_container(state, success=container_success),
@@ -283,12 +449,14 @@ class BackupOrchestrator:
                 container.start()
                 LOGGER.info(
                     "container_started",
-                    extra={"group": group_name, "container": container.name},
+                    group=group_name,
+                    container=container.name,
                 )
             except Exception:
                 LOGGER.exception(
                     "container_start_failed",
-                    extra={"group": group_name, "container": container.name},
+                    group=group_name,
+                    container=container.name,
                 )
                 success = False
         return success
@@ -349,3 +517,33 @@ def _first_repo_digest(container: DockerContainer) -> str | None:
 def _error_summary(error: object) -> str:
     text = str(error).strip()
     return text.splitlines()[0][:500] if text else "unknown error"
+
+
+def _log_mount_plan(
+    group_name: str,
+    container_name: str,
+    mounts: list[BackupMount],
+    *,
+    dry_run: bool,
+) -> list[BackupMount]:
+    selected: list[BackupMount] = []
+    for backup_mount in mounts:
+        event_prefix = "dry_run_" if dry_run else ""
+        fields = {
+            "group": group_name,
+            "container": container_name,
+            "mount_type": backup_mount.mount.type,
+            "mount_name": backup_mount.mount.name,
+            "mount_source": backup_mount.mount.source,
+            "destination": backup_mount.mount.destination,
+        }
+        if backup_mount.skip_reason:
+            LOGGER.warning(
+                f"{event_prefix}mount_skipped",
+                reason=backup_mount.skip_reason,
+                **fields,
+            )
+            continue
+        LOGGER.info(f"{event_prefix}mount_selected", **fields)
+        selected.append(backup_mount)
+    return selected

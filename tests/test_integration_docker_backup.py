@@ -86,7 +86,7 @@ backup_operation = 120
                 "backup.enabled": "true",
                 "backup.group": run_id,
                 "backup.stop": "true",
-                "backup.volumes": volume_name,
+                "backup.mounts": volume_name,
             },
             volumes={volume_name: {"bind": "/data", "mode": "rw"}},
         )

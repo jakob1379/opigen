@@ -7,6 +7,11 @@ name = "opigen-backup"
 version = "0.1.0"
 description = "Docker volume backup orchestrator using restic"
 requires-python = ">=3.13"
+dependencies = [
+  "docker",
+  "structlog",
+  "typer"
+]
 
 [project.scripts]
 backup = "backup.cli:main"

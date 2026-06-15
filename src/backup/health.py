@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import json
-import logging
 import threading
 from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import structlog
+
 from backup.config import AppConfig, load_config
 from backup.metrics import render_prometheus
 from backup.state import BackupState, StateStore, utc_now
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = structlog.get_logger(__name__)
 
 
 class HealthServer:
@@ -27,7 +28,8 @@ class HealthServer:
     def start(self) -> None:
         LOGGER.info(
             "health_server_started",
-            extra={"bind_host": self.config.health.bind_host, "port": self.config.health.port},
+            bind_host=self.config.health.bind_host,
+            port=self.config.health.port,
         )
         self.thread.start()
 
@@ -68,7 +70,7 @@ class HealthServer:
                     self._json_response(503, {"status": "error", "error": str(exc)})
 
             def log_message(self, format: str, *args) -> None:
-                LOGGER.debug("health_http_log", extra={"message": format % args})
+                LOGGER.debug("health_http_log", message=format % args)
 
             def _json_response(self, status: int, payload: dict[str, object]) -> None:
                 body = json.dumps(payload, sort_keys=True).encode("utf-8")

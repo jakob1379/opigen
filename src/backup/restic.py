@@ -35,13 +35,28 @@ class ResticRunner:
         container: DockerContainer,
         destination: str,
         extra_args: tuple[str, ...],
+        worker_mounts: tuple[WorkerMount, ...] = (),
     ) -> ResticCommandResult:
         self.ensure_repository()
         command = ["restic", "backup", *self.config.restic.global_args, *extra_args]
         if "--json" not in command:
             command.append("--json")
         command.append(destination)
-        return self._run(command, source_container=container)
+        return self._run(
+            command,
+            source_container=None if worker_mounts else container,
+            worker_mounts=worker_mounts,
+        )
+
+    def check_readable_path(self, path: str, worker_mounts: tuple[WorkerMount, ...]) -> bool:
+        command = [
+            "python3.13",
+            "-c",
+            "import os, sys; sys.exit(0 if os.access(sys.argv[1], os.R_OK) else 1)",
+            path,
+        ]
+        result = self._run(command, worker_mounts=worker_mounts)
+        return result.exit_code == 0
 
     def restore_volume(
         self,
@@ -81,6 +96,19 @@ class ResticRunner:
 
         if changed:
             state_store.save(state)
+
+    def planned_maintenance(self, state: BackupState) -> tuple[str, ...]:
+        now = utc_now()
+        planned: list[str] = []
+        if self.config.prune.enabled and _due(state.last_prune_at, "daily", now):
+            planned.append("prune")
+        if self.config.check.enabled and _due(
+            state.last_check_at,
+            self.config.check.frequency,
+            now,
+        ):
+            planned.append("check")
+        return tuple(planned)
 
     def _run_prune_if_due(
         self,

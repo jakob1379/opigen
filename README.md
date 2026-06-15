@@ -9,16 +9,19 @@ runs repository maintenance after the backup pass completes.
 
 ## Features
 
-- Backs up named Docker volumes only.
+- Backs up named Docker volumes and readable bind mounts.
 - Discovers all containers with `backup.enabled=true`, including stopped
   containers.
 - Groups containers by `backup.group` so related services can be stopped
   together for consistency.
 - Stops only containers with `backup.stop=true`, and restarts only containers
   stopped by the current run.
-- Defaults to all named volumes, with optional CSV selection by Docker volume
-  name or container mount destination.
+- Defaults to named volumes when `backup.mounts` is omitted, with optional
+  selection by Docker volume name or container mount destination.
+- Treats `backup.mounts=all` as all readable backup-capable mounts.
 - Parses global and per-container restic arguments with `shlex.split`.
+- Supports a narrow pre-stop Docker signal before the normal stop/backup/start
+  flow.
 - Auto-initializes the restic repository when `restic snapshots` shows it is
   missing.
 - Runs `forget --prune` and `check` once after all backup groups finish.
@@ -55,6 +58,21 @@ docker run --rm \
   -v ./config:/config:ro \
   -v opigen-backup-state:/state \
   ghcr.io/jakob1379/opigen:latest run-once --config /config/backup.toml
+```
+
+Preview the same pass without stopping containers, writing state, or running
+restic:
+
+```bash
+docker run --rm \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --group-add "$(stat -c '%g' /var/run/docker.sock)" \
+  --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v ./config:/config:ro \
+  ghcr.io/jakob1379/opigen:latest run-once --dry-run --config /config/backup.toml
 ```
 
 Run as a scheduled service:
@@ -108,6 +126,14 @@ port = 8080
 # Optional. Default is twice the configured schedule interval.
 readiness_max_age_seconds = 172800
 
+[logging]
+level = "info"
+format = "json" # json or console
+
+[discovery]
+default_mounts = "named" # named or all when backup.mounts is omitted
+unreadable_mount = "skip"
+
 [schedule]
 enabled = true
 frequency = "daily"
@@ -139,13 +165,15 @@ restore commands and by the health/metrics endpoints.
 
 ## Container Labels
 
-| Label            | Required | Default | Description                                              |
-| ---------------- | -------- | ------- | -------------------------------------------------------- |
-| `backup.enabled` | Yes      | -       | Set to `true` to opt in.                                 |
-| `backup.group`   | Yes      | -       | Group key for coordinated sequential backup.             |
-| `backup.stop`    | No       | `true`  | Stop the container during its group backup.              |
-| `backup.args`    | No       | empty   | Extra restic backup args, parsed shell-style.            |
-| `backup.volumes` | No       | `all`   | `all` or CSV of named volume names / mount destinations. |
+| Label                          | Required | Default | Description                                                  |
+| ------------------------------ | -------- | ------- | ------------------------------------------------------------ |
+| `backup.enabled`               | Yes      | -       | Set to `true` to opt in.                                     |
+| `backup.group`                 | Yes      | -       | Group key for coordinated sequential backup.                 |
+| `backup.stop`                  | No       | `true`  | Stop the container during its group backup.                  |
+| `backup.restic_args`           | No       | empty   | Extra restic backup args, parsed shell-style.                |
+| `backup.mounts`                | No       | config  | `all` or CSV of volume names / container mount destinations. |
+| `backup.pre_stop_signal`       | No       | empty   | Docker signal sent before the normal stop action.            |
+| `backup.pre_stop_wait_seconds` | No       | `0`     | Delay after the pre-stop signal before stopping.             |
 
 Example labels:
 
@@ -155,8 +183,10 @@ services:
     labels:
       - backup.enabled=true
       - backup.group=postgres
-      - backup.args=--exclude=pg_wal --one-file-system
-      - backup.volumes=pgdata,/var/lib/postgresql/data
+      - backup.restic_args=--exclude=pg_wal --one-file-system
+      - backup.mounts=pgdata,/var/lib/postgresql/data
+      - backup.pre_stop_signal=USR1
+      - backup.pre_stop_wait_seconds=10
 
   prometheus:
     labels:
@@ -165,12 +195,15 @@ services:
       - backup.stop=false
 ```
 
-Bind mounts are ignored in v1, even when selected manually.
+Unsupported mount types such as `tmpfs`, Swarm configs/secrets, named pipes, and
+unknown Docker mount types are skipped with an explicit log reason. Readable
+bind mounts are mounted read-only into the restic worker and skipped with a
+warning if the worker cannot read them.
 
 ## Restore
 
-Backups record the group, source container, selected named volume, original
-mount destination, image reference, image ID, repo digest when available, restic
+Backups record the group, source container, selected mount, original mount
+destination, image reference, image ID, repo digest when available, restic
 snapshot ID, and backup outcome.
 
 ```bash
@@ -249,13 +282,15 @@ sequenceDiagram
     Orchestrator->>Orchestrator: parse labels and group by backup.group
 
     loop Each group, sequentially
+        Orchestrator->>Docker: send backup.pre_stop_signal, if configured
         Orchestrator->>Docker: stop running containers with backup.stop=true
         alt stop failure
             Orchestrator->>Docker: restart containers stopped by this run
             Orchestrator->>Orchestrator: skip group
         else stopped or no stop required
-            loop Each container volume
-                Orchestrator->>Orchestrator: resolve selected named volumes
+            loop Each selected mount
+                Orchestrator->>Orchestrator: resolve selected backup mounts
+                Orchestrator->>Worker: check bind mount readability, if needed
                 Orchestrator->>Worker: restic snapshots
                 alt repository missing
                     Orchestrator->>Worker: restic init

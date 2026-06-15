@@ -258,6 +258,7 @@
 
           dependencies = [
             pkgs.python313Packages.docker
+            pkgs.python313Packages.structlog
             pkgs.python313Packages.typer
           ];
 
@@ -290,6 +291,7 @@
           ++ pkgs.lib.filter (drv: drv != python) (
             pythonPackages.requiredPythonModules [
               pythonPackages.docker
+              pythonPackages.structlog
               pythonPackages.typer
             ]
           );
@@ -478,7 +480,7 @@
 
           minimal-runtime-smoke = pkgs.runCommand "opigen-backup-minimal-runtime-smoke" { } ''
             ${opigen-backup-runtime}/bin/backup --help >/dev/null
-            ${opigen-backup-runtime}/bin/python3.13 -c 'import zlib, ssl, typer, docker, requests, urllib3, backup.cli'
+            ${opigen-backup-runtime}/bin/python3.13 -c 'import zlib, ssl, typer, docker, structlog, requests, urllib3, backup.cli'
             touch "$out"
           '';
 
@@ -504,6 +506,7 @@
             ps: with ps; [
               docker
               pytest
+              structlog
               typer
             ]
           );
