@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from backup.docker_client import Mount, WorkerResult
+from backup.docker_client import ImageMetadata, Mount, WorkerResult
 
 
 @dataclass
@@ -11,6 +11,13 @@ class FakeContainer:
     status: str = "running"
     labels: dict[str, str] = field(default_factory=dict)
     mounts: list[Mount] = field(default_factory=list)
+    image: ImageMetadata = field(
+        default_factory=lambda: ImageMetadata(
+            reference="fixture:latest",
+            image_id="sha256:fixture",
+            repo_digests=("fixture@sha256:digest",),
+        )
+    )
     id: str | None = None
     stop_error: Exception | None = None
     start_error: Exception | None = None
@@ -42,6 +49,14 @@ class FakeDockerClient:
         self.containers = containers or []
         self.worker_calls = []
         self.results: list[WorkerResult] = []
+        self.created_volumes: list[str] = []
+        self.images: dict[str, ImageMetadata] = {
+            "fixture:latest": ImageMetadata(
+                reference="fixture:latest",
+                image_id="sha256:fixture",
+                repo_digests=("fixture@sha256:digest",),
+            )
+        }
 
     def list_backup_containers(self):
         return self.containers
@@ -51,3 +66,9 @@ class FakeDockerClient:
         if self.results:
             return self.results.pop(0)
         return WorkerResult(exit_code=0, output="")
+
+    def image_metadata(self, reference: str) -> ImageMetadata:
+        return self.images[reference]
+
+    def create_volume(self, name: str) -> None:
+        self.created_volumes.append(name)

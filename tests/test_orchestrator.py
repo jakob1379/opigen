@@ -91,3 +91,34 @@ def test_initially_stopped_container_is_not_started(app_config):
     assert _orchestrator(app_config, docker_client).run_once() is True
 
     assert stopped.events == []
+
+
+def test_successful_backup_records_restore_metadata(app_config):
+    container = _container("db", "database")
+    docker_client = FakeDockerClient([container])
+    docker_client.results = [
+        WorkerResult(0, "snapshots"),
+        WorkerResult(0, '{"message_type":"summary","snapshot_id":"snapshot123"}\n'),
+        WorkerResult(0, "forget"),
+        WorkerResult(0, "check"),
+    ]
+    orchestrator = _orchestrator(app_config, docker_client)
+
+    assert orchestrator.run_once() is True
+
+    state = StateStore(app_config.state.path).load()
+    record = state.backups[0]
+    assert record.group == "database"
+    assert record.container_name == "db"
+    assert record.volume_name == "db-data"
+    assert record.volume_destination == "/data"
+    assert record.image_reference == "fixture:latest"
+    assert record.image_id == "sha256:fixture"
+    assert record.repo_digest == "fixture@sha256:digest"
+    assert record.snapshot_id == "snapshot123"
+    assert record.snapshot_paths == ("/data",)
+    assert state.runtime.last_run_success is True
+    assert state.runtime.last_run_containers_attempted == 1
+    assert state.runtime.last_run_volumes_attempted == 1
+    assert state.metrics.backup_runs["success"] == 1
+    assert state.metrics.backup_volumes["success"] == 1

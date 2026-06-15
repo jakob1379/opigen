@@ -36,6 +36,7 @@ def serve(
     run_once: Callable[[], bool],
     *,
     sleep: Callable[[float], None] = time_module.sleep,
+    on_next_run: Callable[[datetime], None] | None = None,
 ) -> None:
     if not schedule.enabled:
         LOGGER.info("schedule_disabled_running_once")
@@ -45,6 +46,8 @@ def serve(
     while True:
         now = datetime.now().astimezone()
         next_run = calculate_next_run(now, schedule)
+        if on_next_run is not None:
+            on_next_run(next_run)
         delay = max(0.0, (next_run - now).total_seconds())
         LOGGER.info("next_run_scheduled", extra={"next_run": next_run.isoformat()})
         sleep(delay)

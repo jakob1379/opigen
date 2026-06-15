@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import subprocess
@@ -32,6 +33,7 @@ def test_backup_named_volume_with_docker_restic_worker(tmp_path: Path):
     volume_name = f"{run_id}-data"
     repo_dir = tmp_path / "restic-repo"
     repo_dir.mkdir()
+    state_file = tmp_path / "state.json"
     password_file = tmp_path / "restic-password"
     password_file.write_text("integration-secret\n", encoding="utf-8")
     config_file = tmp_path / "backup.toml"
@@ -44,6 +46,9 @@ password_file = "{password_file}"
 [runtime]
 worker_image = "{image}"
 worker_mounts = ["{repo_dir}:/restic-repo:rw"]
+
+[state]
+path = "{state_file}"
 
 [schedule]
 enabled = false
@@ -105,6 +110,53 @@ backup_operation = 120
 
         container.reload()
         assert container.status == "running"
+        restore_volume_name = f"{run_id}-restored"
+        restore_list = subprocess.run(
+            [
+                "nix",
+                "run",
+                ".#backup",
+                "--",
+                "restore",
+                "list",
+                "--config",
+                str(config_file),
+            ],
+            cwd=Path(__file__).resolve().parents[1],
+            text=True,
+            capture_output=True,
+        )
+        assert restore_list.returncode == 0, restore_list.stdout + restore_list.stderr
+        backup_id = json.loads(restore_list.stdout)[0]["id"]
+        restore_result = subprocess.run(
+            [
+                "nix",
+                "run",
+                ".#backup",
+                "--",
+                "restore",
+                "volume",
+                backup_id,
+                "--target-volume",
+                restore_volume_name,
+                "--config",
+                str(config_file),
+            ],
+            cwd=Path(__file__).resolve().parents[1],
+            text=True,
+            capture_output=True,
+        )
+        assert restore_result.returncode == 0, restore_result.stdout + restore_result.stderr
+        restored_from_volume = client.containers.run(
+            image=fixture_image,
+            command=["cat", "/data/payload.txt"],
+            volumes={restore_volume_name: {"bind": "/data", "mode": "ro"}},
+            remove=True,
+        )
+        if isinstance(restored_from_volume, bytes):
+            restored_from_volume = restored_from_volume.decode("utf-8")
+        assert restored_from_volume == payload
+
         restored_payload = client.containers.run(
             image=image,
             command=["restic", "dump", "latest", "/data/payload.txt"],
@@ -112,6 +164,7 @@ backup_operation = 120
                 "RESTIC_REPOSITORY": "/restic-repo",
                 "RESTIC_PASSWORD": "integration-secret",
             },
+            user="0:0",
             volumes={str(repo_dir): {"bind": "/restic-repo", "mode": "rw"}},
             remove=True,
         )
@@ -122,6 +175,10 @@ backup_operation = 120
     finally:
         if container is not None:
             container.remove(force=True)
+        try:
+            client.volumes.get(f"{run_id}-restored").remove(force=True)
+        except Exception:
+            pass
         volume.remove(force=True)
 
 

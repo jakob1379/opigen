@@ -39,6 +39,13 @@ class StateConfig:
 
 
 @dataclass(frozen=True)
+class HealthConfig:
+    bind_host: str = "127.0.0.1"
+    port: int = 8080
+    readiness_max_age_seconds: int | None = None
+
+
+@dataclass(frozen=True)
 class ScheduleConfig:
     enabled: bool = True
     frequency: str = "daily"
@@ -77,6 +84,7 @@ class AppConfig:
     backup: BackupRepositoryConfig
     runtime: RuntimeConfig = RuntimeConfig()
     state: StateConfig = StateConfig()
+    health: HealthConfig = HealthConfig()
     schedule: ScheduleConfig = ScheduleConfig()
     prune: PruneConfig = PruneConfig()
     check: CheckConfig = CheckConfig()
@@ -103,6 +111,7 @@ def parse_config(data: dict[str, Any]) -> AppConfig:
     timeouts_data = _table(data, "timeouts")
     runtime_data = _table(data, "runtime")
     state_data = _table(data, "state")
+    health_data = _table(data, "health")
 
     schedule_frequency = str(schedule_data.get("frequency", "daily"))
     _validate_frequency(schedule_frequency, "schedule.frequency")
@@ -122,6 +131,15 @@ def parse_config(data: dict[str, Any]) -> AppConfig:
             worker_mounts=_parse_worker_mounts(runtime_data.get("worker_mounts", [])),
         ),
         state=StateConfig(path=Path(str(state_data.get("path", "/state/backup_state.json")))),
+        health=HealthConfig(
+            bind_host=str(health_data.get("bind_host", "127.0.0.1")),
+            port=int(health_data.get("port", 8080)),
+            readiness_max_age_seconds=_optional_int(
+                health_data,
+                "readiness_max_age_seconds",
+                None,
+            ),
+        ),
         schedule=ScheduleConfig(
             enabled=bool(schedule_data.get("enabled", True)),
             frequency=schedule_frequency,

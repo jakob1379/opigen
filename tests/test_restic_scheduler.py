@@ -4,7 +4,7 @@ from datetime import UTC, datetime, time
 
 from backup.config import ScheduleConfig
 from backup.docker_client import WorkerResult
-from backup.restic import ResticRunner, repository_needs_init
+from backup.restic import ResticRunner, parse_backup_snapshot_id, repository_needs_init
 from backup.scheduler import calculate_next_run
 from tests.fakes import FakeContainer, FakeDockerClient
 
@@ -22,13 +22,24 @@ def test_restic_command_and_environment(app_config):
 
     result = runner.backup_volume(container, "/data", ("--exclude", "*.tmp"))
 
-    assert result.command == ("restic", "backup", "--verbose", "--exclude", "*.tmp", "/data")
+    assert result.command == (
+        "restic",
+        "backup",
+        "--verbose",
+        "--exclude",
+        "*.tmp",
+        "--json",
+        "/data",
+    )
     backup_call = docker_client.worker_calls[1]
     assert backup_call["image"] == "worker:test"
     assert backup_call["source_container"] is container
     assert backup_call["environment"]["RESTIC_REPOSITORY"] == "s3:http://example/backups"
     assert backup_call["environment"]["RESTIC_PASSWORD"] == "restic-pass"
     assert backup_call["environment"]["AWS_ACCESS_KEY_ID"] == "access-key"
+    assert backup_call["environment"]["HOME"] == "/tmp"
+    assert backup_call["environment"]["TMPDIR"] == "/tmp"
+    assert backup_call["environment"]["XDG_CACHE_HOME"] == "/tmp/restic-cache"
 
 
 def test_restic_initializes_missing_repository(app_config):
@@ -51,6 +62,12 @@ def test_restic_initializes_missing_repository(app_config):
 def test_repository_needs_init_detection():
     assert repository_needs_init("Fatal: unable to open config file")
     assert not repository_needs_init("Fatal: wrong password or no key found")
+
+
+def test_parse_backup_snapshot_id_from_json_summary():
+    output = '{"message_type":"summary","snapshot_id":"abc123"}\n'
+
+    assert parse_backup_snapshot_id(output) == "abc123"
 
 
 def test_calculate_next_hourly_run():

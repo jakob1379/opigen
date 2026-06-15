@@ -8,6 +8,10 @@ aws_secret_access_key_file = "/run/secrets/aws_secret_key"
 enabled = true
 frequency = "weekly"
 
+[health]
+bind_host = "127.0.0.1"
+port = 8080
+
 [prune]
 enabled = true
 keep_hourly = 48

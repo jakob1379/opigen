@@ -20,8 +20,30 @@ def test_parse_config_defaults(secret_files):
 
     assert config.runtime.worker_image == "opigen-backup:latest"
     assert config.state.path.as_posix() == "/state/backup_state.json"
+    assert config.health.bind_host == "127.0.0.1"
+    assert config.health.port == 8080
     assert config.schedule.frequency == "daily"
     assert config.restic.global_args == ()
+
+
+def test_parse_config_health(secret_files):
+    config = parse_config(
+        {
+            "backup": {
+                "repository": "s3:http://repo",
+                "password_file": str(secret_files["password"]),
+            },
+            "health": {
+                "bind_host": "0.0.0.0",
+                "port": 9090,
+                "readiness_max_age_seconds": 300,
+            },
+        }
+    )
+
+    assert config.health.bind_host == "0.0.0.0"
+    assert config.health.port == 9090
+    assert config.health.readiness_max_age_seconds == 300
 
 
 def test_parse_config_worker_mounts(secret_files):
