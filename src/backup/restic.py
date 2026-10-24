@@ -50,7 +50,7 @@ class ResticRunner:
 
     def check_readable_path(self, path: str, worker_mounts: tuple[WorkerMount, ...]) -> bool:
         command = [
-            "python3.13",
+            "python3",
             "-c",
             "import os, sys; sys.exit(0 if os.access(sys.argv[1], os.R_OK) else 1)",
             path,

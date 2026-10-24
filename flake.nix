@@ -36,11 +36,11 @@
                 exit 0
               fi
 
-              export UV_PYTHON=${pkgs.python313}/bin/python3.13
+              export UV_PYTHON=${pkgs.lib.getExe pkgs.python314}
               export PATH=${
                 pkgs.lib.makeBinPath [
                   pkgs.coreutils
-                  pkgs.python313
+                  pkgs.python314
                   pkgs.uv
                 ]
               }
@@ -199,7 +199,7 @@
               package = pkgs.symlinkJoin {
                 name = "uv-audit-env";
                 paths = [
-                  pkgs.python313
+                  pkgs.python314
                   pkgs.uv
                 ];
               };
@@ -211,11 +211,11 @@
 
                 export PATH=${
                   pkgs.lib.makeBinPath [
-                    pkgs.python313
+                    pkgs.python314
                     pkgs.uv
                   ]
                 }
-                exec ${pkgs.lib.getExe pkgs.uv} audit --preview-features audit --no-managed-python --python-version 3.13 --frozen
+                exec ${pkgs.lib.getExe pkgs.uv} audit --preview-features audit --no-managed-python --python-version 3.14 --frozen
               ''}";
               pass_filenames = false;
               files = "^uv\\.lock$";
@@ -245,7 +245,7 @@
         ];
       mkBackupPackage =
         pkgs:
-        pkgs.python313Packages.buildPythonApplication {
+        pkgs.python314Packages.buildPythonApplication {
           pname = "opigen-backup";
           version = "0.1.0";
           pyproject = true;
@@ -253,17 +253,17 @@
           src = ./.;
 
           build-system = [
-            pkgs.python313Packages.hatchling
+            pkgs.python314Packages.hatchling
           ];
 
           dependencies = [
-            pkgs.python313Packages.docker
-            pkgs.python313Packages.structlog
-            pkgs.python313Packages.typer
+            pkgs.python314Packages.docker
+            pkgs.python314Packages.structlog
+            pkgs.python314Packages.typer
           ];
 
           nativeCheckInputs = [
-            pkgs.python313Packages.pytest
+            pkgs.python314Packages.pytest
           ];
 
           pythonImportsCheck = [
@@ -280,9 +280,9 @@
       mkMinimalPythonRuntime =
         pkgs: opigen-backup:
         let
-          python = pkgs.python313;
+          python = pkgs.python314;
           pythonMinimal = pkgs.python3Minimal;
-          pythonPackages = pkgs.python313Packages;
+          pythonPackages = pkgs.python314Packages;
           pythonLib = python.libPrefix;
           sitePackages = python.sitePackages;
           runtimeModules = [
@@ -301,6 +301,8 @@
             fi
           '') runtimeModules;
         in
+        assert pkgs.lib.assertMsg (pythonMinimal.pythonVersion == python.pythonVersion)
+          "python3Minimal is ${pythonMinimal.pythonVersion} but the runtime uses ${python.pythonVersion}; bump `python` in mkMinimalPythonRuntime";
         pkgs.runCommand "opigen-backup-minimal-runtime"
           {
             nativeBuildInputs = [
@@ -309,7 +311,6 @@
             ];
             disallowedRequisites = [
               pkgs.python3Minimal
-              pkgs.python313
               pkgs.python314
             ];
           }
@@ -319,14 +320,14 @@
             chmod -R u+w "$out"
 
             mkdir -p "$out/${sitePackages}" "$out/lib/${pythonLib}/lib-dynload"
-            patchelf --set-rpath "$out/lib:${pkgs.glibc}/lib:${pkgs.stdenv.cc.cc.lib}/lib" "$out/bin/python3.13"
+            patchelf --set-rpath "$out/lib:${pkgs.glibc}/lib:${pkgs.stdenv.cc.cc.lib}/lib" "$out/bin/${python.executable}"
             for libpython in "$out/lib"/libpython3*.so*; do
               if [ -f "$libpython" ] && [ ! -L "$libpython" ]; then
                 patchelf --set-rpath "${pkgs.glibc}/lib:${pkgs.stdenv.cc.cc.lib}/lib" "$libpython"
                 remove-references-to -t "${pythonMinimal}" "$libpython"
               fi
             done
-            remove-references-to -t "${pythonMinimal}" "$out/bin/python3.13"
+            remove-references-to -t "${pythonMinimal}" "$out/bin/${python.executable}"
 
             cp "${python}/lib/${pythonLib}/lib-dynload"/zlib*.so "$out/lib/${pythonLib}/lib-dynload/"
             cp "${python}/lib/${pythonLib}/lib-dynload"/_ssl*.so "$out/lib/${pythonLib}/lib-dynload/"
@@ -336,7 +337,7 @@
 
             rm -rf "$out/include" "$out/lib/pkgconfig" "$out/share"
             rm -rf "$out/nix-support"
-            for sysconfigData in "$out/lib/${pythonLib}"/_sysconfigdata_*.py; do
+            for sysconfigData in "$out/lib/${pythonLib}"/_sysconfigdata_*.py "$out/lib/${pythonLib}"/_sysconfig_vars_*.json "$out/lib/${pythonLib}/build-details.json"; do
               if [ -f "$sysconfigData" ]; then
                 substituteInPlace "$sysconfigData" --replace-fail "${pythonMinimal}" "$out"
               fi
@@ -344,11 +345,11 @@
             find "$out" -type d -name __pycache__ -prune -exec rm -rf {} +
             find "$out" -type f -name '*.pyc' -delete
 
-            ln -sf python3.13 "$out/bin/python"
-            ln -sf python3.13 "$out/bin/python3"
-            rm -f "$out/bin/pydoc" "$out/bin/pydoc3" "$out/bin/pydoc3.13"
+            ln -sf ${python.executable} "$out/bin/python"
+            ln -sf ${python.executable} "$out/bin/python3"
+            rm -f "$out/bin/pydoc" "$out/bin/pydoc3" "$out/bin/pydoc${python.pythonVersion}"
             {
-              echo "#!$out/bin/python3.13"
+              echo "#!$out/bin/${python.executable}"
               echo "import sys"
               echo
               echo "from backup.cli import main"
@@ -357,7 +358,7 @@
             } > "$out/bin/backup"
             chmod 0555 "$out/bin/backup"
 
-            "$out/bin/python3.13" -c 'import zlib, ssl, hashlib'
+            "$out/bin/${python.executable}" -c 'import zlib, ssl, hashlib'
             "$out/bin/backup" --help >/dev/null
           '';
     in
@@ -480,7 +481,7 @@
 
           minimal-runtime-smoke = pkgs.runCommand "opigen-backup-minimal-runtime-smoke" { } ''
             ${opigen-backup-runtime}/bin/backup --help >/dev/null
-            ${opigen-backup-runtime}/bin/python3.13 -c 'import zlib, ssl, typer, docker, structlog, requests, urllib3, backup.cli'
+            ${opigen-backup-runtime}/bin/python3 -c 'import zlib, ssl, typer, docker, structlog, requests, urllib3, backup.cli'
             touch "$out"
           '';
 
@@ -502,7 +503,7 @@
           pkgs = mkPkgs system;
           opigen-backup = mkBackupPackage pkgs;
           restic-slim = mkSlimRestic pkgs;
-          python = pkgs.python313.withPackages (
+          python = pkgs.python314.withPackages (
             ps: with ps; [
               docker
               pytest
